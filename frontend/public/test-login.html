@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login Test</title>
+  <style>
+    body { 
+      font-family: Arial, sans-serif; 
+      max-width: 800px; 
+      margin: 0 auto; 
+      padding: 20px; 
+      line-height: 1.6;
+    }
+    .container { 
+      border: 1px solid #ddd; 
+      padding: 20px; 
+      border-radius: 5px; 
+      margin-top: 20px;
+    }
+    .form-group { 
+      margin-bottom: 15px; 
+    }
+    label { 
+      display: block; 
+      margin-bottom: 5px; 
+    }
+    input { 
+      width: 100%; 
+      padding: 8px; 
+      box-sizing: border-box; 
+    }
+    button { 
+      padding: 8px 16px; 
+      background: #007bff; 
+      color: white; 
+      border: none; 
+      border-radius: 4px; 
+      cursor: pointer;
+    }
+    button:hover { 
+      background: #0056b3; 
+    }
+    .result { 
+      margin-top: 20px; 
+      padding: 10px; 
+      border-radius: 4px;
+    }
+    .success { 
+      background: #d4edda; 
+      color: #155724; 
+    }
+    .error { 
+      background: #f8d7da; 
+      color: #721c24; 
+    }
+  </style>
+</head>
+<body>
+  <h1>Login Test</h1>
+  <div class="container">
+    <div class="form-group">
+      <label for="username">Username:</label>
+      <input type="text" id="username" value="testuser">
+    </div>
+    <div class="form-group">
+      <label for="password">Password:</label>
+      <input type="password" id="password" value="testpass">
+    </div>
+    <button onclick="testLogin()">Test Login</button>
+    <div id="result" class="result"></div>
+  </div>
+
+  <h2>Test Results</h2>
+  <pre id="output"></pre>
+
+  <script>
+    function log(message) {
+      const output = document.getElementById('output');
+      output.textContent += message + '\n';
+      console.log(message);
+    }
+
+    function showResult(message, isError = false) {
+      const result = document.getElementById('result');
+      result.textContent = message;
+      result.className = 'result ' + (isError ? 'error' : 'success');
+    }
+
+    async function testLogin() {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      
+      log('\n=== Starting Login Test ===');
+      log(`Testing with username: ${username}`);
+      
+      try {
+        // 1. Make login request
+        log('\n1. Making login request...');
+        const response = await fetch('http://localhost:5000/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({ username, password })
+        });
+        
+        const data = await response.json();
+        log(`Response status: ${response.status}`);
+        log('Response data:', JSON.stringify(data, null, 2));
+        
+        if (!response.ok) {
+          throw new Error(data.message || 'Login failed');
+        }
+        
+        // 2. Check if we got a token
+        const token = data.data?.accessToken;
+        if (token) {
+          log('\n2. Token received, storing in localStorage');
+          localStorage.setItem('accessToken', token);
+        } else {
+          log('\n2. No token received in response');
+        }
+        
+        // 3. Try to access protected route
+        log('\n3. Trying to access protected route...');
+        const protectedResponse = await fetch('http://localhost:5000/api/protected', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include'
+        });
+        
+        const protectedData = await protectedResponse.json();
+        log(`Protected route status: ${protectedResponse.status}`);
+        log('Protected route response:', JSON.stringify(protectedData, null, 2));
+        
+        showResult('Login test completed successfully!');
+        
+      } catch (error) {
+        log('\nError:', error.message);
+        showResult(`Error: ${error.message}`, true);
+      }
+    }
+  </script>
+</body>
+</html>
