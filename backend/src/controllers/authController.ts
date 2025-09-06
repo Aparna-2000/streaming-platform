@@ -1,4 +1,3 @@
-// Path: backend/src/controllers/authController.ts
 import { Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -21,6 +20,8 @@ const REFRESH_TOKEN_EXPIRY = '7d';
  * - Optionally sets access token cookie (HttpOnly) for same-site usage
  */
 export const login = async (req: AuthRequest, res: Response) => {
+  console.log(' Login controller called');
+  console.log(' Received body:', req.body);
   console.log('Login attempt:', req.body.username); // Debug log
   try {
     const errors = validationResult(req);
@@ -34,6 +35,52 @@ export const login = async (req: AuthRequest, res: Response) => {
     }
 
     const { username, password } = req.body as { username?: string; password?: string };
+    
+    // Validate and sanitize inputs
+    if (!username || !password) {
+      console.log(' Missing username or password');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username and password are required' 
+      });
+    }
+
+    // Check for invalid characters first (before length validation)
+    if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+      console.log(' Username invalid characters:', username);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username can only contain letters, numbers, underscores, hyphens and should not extend 30 characters' 
+      });
+    }
+
+    // Then check length constraints
+    if (username.length < 3) {
+      console.log(' Username too short:', username.length);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username must be at least 3 characters' 
+      });
+    }
+
+    if (username.length > 30) {
+      console.log(' Username too long:', username.length);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username must be no more than 30 characters' 
+      });
+    }
+
+    if (password.length < 6) {
+      console.log(' Password too short:', password.length);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Password must be at least 6 characters' 
+      });
+    }
+
+    console.log(' Validation passed, processing login for user:', username); // Debug log
+
     console.log('Processing login for user:', username); // Debug log
 
     // Get user from database
@@ -230,6 +277,14 @@ export const register = async (req: AuthRequest, res: Response) => {
       email?: string;
       password?: string;
     };
+
+    // Validate and sanitize inputs
+    if (!username || !email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username, email, and password are required' 
+      });
+    }
 
     // Check if user or email already exists
     const [existingUsers] = await pool.execute(

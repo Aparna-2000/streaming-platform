@@ -5,7 +5,10 @@ import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { login, register, refreshToken, logout, getCurrentUser } from "./controllers/authController";
-import { authenticateToken, AuthRequest } from "./middleware/auth";
+import { authenticateToken } from './middleware/auth';
+import { requireAuth } from './middleware/requireAuth';
+import validator from 'validator';
+import xss from 'xss';
 
 // Load environment variables early
 dotenv.config();
@@ -103,14 +106,51 @@ app.get("/health", (_req, res) => {
 });
 
 /**
+ * Input sanitization middleware
+ */
+function sanitizeInputs(allowedInputs: string[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    console.log('🧹 Sanitization middleware called for:', allowedInputs);
+    console.log('📤 Original body:', req.body);
+    
+    if (req.body && typeof req.body === 'object') {
+      for (const input of allowedInputs) {
+        if (req.body[input] && typeof req.body[input] === 'string') {
+          const original = req.body[input];
+          
+          // Trim whitespace
+          let sanitized = validator.trim(req.body[input]);
+          
+          // Escape HTML entities to prevent XSS
+          sanitized = validator.escape(sanitized);
+          
+          // Filter XSS attempts
+          sanitized = xss(sanitized, {
+            whiteList: {}, // No HTML tags allowed
+            stripIgnoreTag: true,
+            stripIgnoreTagBody: ['script']
+          });
+          
+          req.body[input] = sanitized;
+          console.log(`🔄 ${input}: "${original}" → "${sanitized}"`);
+        }
+      }
+    }
+    
+    console.log('📥 Sanitized body:', req.body);
+    next();
+  };
+}
+
+/**
  * Auth routes (JWT-based)
  * - /auth/login issues short-lived access tokens (~15m)
  * - /auth/refresh-token issues a new access token using a valid refresh token
  * - /auth/logout can revoke refresh tokens server-side
  * - /auth/me returns current user from verified JWT
  */
-app.post("/auth/register", register);
-app.post("/auth/login", login);
+app.post("/auth/register", sanitizeInputs(['username', 'email', 'password']), register);
+app.post("/auth/login", sanitizeInputs(['username', 'password']), login);
 app.post("/auth/refresh-token", refreshToken);
 app.post("/auth/logout", authenticateToken, logout);
 app.get("/auth/me", authenticateToken, getCurrentUser);
@@ -118,7 +158,7 @@ app.get("/auth/me", authenticateToken, getCurrentUser);
 /**
  * Example protected route
  */
-app.get("/protected", authenticateToken, (req: AuthRequest, res: Response) => {
+app.get("/protected", authenticateToken, (req: any, res: Response) => {
   res.json({
     message: "This is a protected route",
     user: req.user,
