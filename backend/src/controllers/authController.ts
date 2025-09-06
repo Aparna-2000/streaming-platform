@@ -16,14 +16,14 @@ import {
 
 // Refresh-token config (access token handled by signAccessToken -> 15m by default)
 const REFRESH_SECRET = process.env.REFRESH_SECRET || 'fallback-refresh-secret';
-const REFRESH_TOKEN_EXPIRY = '7d';
+const REFRESH_TOKEN_EXPIRY = '30m'; // updated to match 30m refresh token lifetime
 
 /**
  * POST /auth/login
  * Body: { username: string, password: string }
  * - Verifies user credentials
  * - Issues short-lived access token (~15m via signAccessToken)
- * - Issues long-lived refresh token (7d) in HttpOnly cookie
+ * - Issues long-lived refresh token (30m) in HttpOnly cookie
  * - Optionally sets access token cookie (HttpOnly) for same-site usage
  */
 export const login = async (req: AuthRequest, res: Response) => {
@@ -121,19 +121,26 @@ export const login = async (req: AuthRequest, res: Response) => {
       role: user.role 
     });
 
-    // Refresh token (7d) signed with dedicated secret
+    // Refresh token (30m) signed with dedicated secret
     const refreshToken = jwt.sign(
-      { userId: user.id, username: user.username, tokenType: 'refresh' },
+      { user_id: user.id, username: user.username, tokenType: 'refresh' },
       REFRESH_SECRET,
       { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
+
+    // Store refresh token in database with device/IP binding
+    const deviceInfo = req.headers['user-agent'] || 'Unknown';
+    const ipAddress = req.ip || req.connection.remoteAddress || 'Unknown';
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes to match REFRESH_TOKEN_EXPIRY
+
+    await storeRefreshToken(user.id, refreshToken, expiresAt, deviceInfo, ipAddress);
 
     // HttpOnly cookies (keep for your front-end flow)
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 30 * 60 * 1000, // 30 minutes
       path: '/',
     });
 
@@ -183,6 +190,24 @@ export const refreshToken = async (req: AuthRequest, res: Response) => {
     
     if (!tokenData) {
       return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+    }
+
+    // IP validation - check if request comes from same IP
+    const currentIP = req.ip || req.connection.remoteAddress || 'Unknown';
+    if (tokenData.ip_address && tokenData.ip_address !== currentIP) {
+      console.log(`IP mismatch: stored=${tokenData.ip_address}, current=${currentIP}`);
+      // Strict IP validation (high security)
+      await revokeRefreshToken(refreshToken);
+      return res.status(401).json({ success: false, message: 'Security validation failed' });
+    }
+
+    // Device validation - check User-Agent
+    const currentDevice = req.headers['user-agent'] || 'Unknown';
+    if (tokenData.device_info && tokenData.device_info !== currentDevice) {
+      console.log(`Device mismatch: stored=${tokenData.device_info}, current=${currentDevice}`);
+      // Flexible device validation (usability balance)
+      console.log('Device change detected - logging for analysis');
+      // Could trigger additional auth steps instead of rejection
     }
 
     // Ensure the user still exists
@@ -272,7 +297,7 @@ export const getCurrentUser = (req: AuthRequest, res: Response) => {
  * POST /auth/register
  * Body: { username, email, password }
  * - Creates user
- * - Issues access token (~15m) and sets refresh token cookie (7d)
+ * - Issues access token (~15m) and sets refresh token cookie (30m)
  */
 export const register = async (req: AuthRequest, res: Response) => {
   try {
@@ -328,12 +353,19 @@ export const register = async (req: AuthRequest, res: Response) => {
       { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
 
+    // Store refresh token in database with device/IP binding
+    const deviceInfo = req.headers['user-agent'] || 'Unknown';
+    const ipAddress = req.ip || req.connection.remoteAddress || 'Unknown';
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes to match REFRESH_TOKEN_EXPIRY
+
+    await storeRefreshToken(userId, refreshToken, expiresAt, deviceInfo, ipAddress);
+
     // Set refresh token cookie
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 30 * 60 * 1000, // 30 minutes
       path: '/',
     });
 

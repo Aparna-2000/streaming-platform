@@ -98,7 +98,7 @@ export async function revokeAllUserTokens(userId: number): Promise<number> {
 export async function cleanupExpiredTokens(): Promise<number> {
   const [result] = await pool.execute<OkPacket>(
     `DELETE FROM refresh_tokens 
-     WHERE expires_at < NOW() OR revoked_at < DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+     WHERE expires_at < NOW() OR revoked_at < DATE_SUB(NOW(), INTERVAL 1 DAY)`,
     []
   );
   
