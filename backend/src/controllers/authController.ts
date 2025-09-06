@@ -6,6 +6,13 @@ import { pool } from '../config/database';
 import { AuthRequest } from '../middleware/auth';
 import { OkPacket } from 'mysql2';
 import { signAccessToken } from '../utils/jwt';
+import { 
+  generateRefreshToken, 
+  storeRefreshToken, 
+  verifyRefreshToken, 
+  revokeRefreshToken,
+  revokeAllUserTokens 
+} from '../utils/refreshTokens';
 
 // Refresh-token config (access token handled by signAccessToken -> 15m by default)
 const REFRESH_SECRET = process.env.REFRESH_SECRET || 'fallback-refresh-secret';
@@ -164,30 +171,31 @@ export const login = async (req: AuthRequest, res: Response) => {
  * - Issues a new short-lived access token
  */
 export const refreshToken = async (req: AuthRequest, res: Response) => {
-  const refreshToken = req.cookies?.refreshToken;
+  const refreshToken = req.cookies.refreshToken;
 
   if (!refreshToken) {
-    return res.status(401).json({ success: false, message: 'Refresh token not provided' });
+    return res.status(401).json({ success: false, message: 'No refresh token provided' });
   }
 
   try {
-    const decoded = jwt.verify(refreshToken, REFRESH_SECRET) as any;
-
-    if (decoded.tokenType !== 'refresh') {
-      return res.status(403).json({ success: false, message: 'Invalid token type' });
+    // Verify refresh token from database
+    const tokenData = await verifyRefreshToken(refreshToken);
+    
+    if (!tokenData) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
     }
 
     // Ensure the user still exists
-    const [rows] = await pool.execute(
+    const [userRows] = await pool.execute(
       'SELECT id, username, email, role FROM users WHERE id = ? LIMIT 1',
-      [decoded.userId]
+      [tokenData.user_id]
     );
 
-    if (!Array.isArray(rows) || rows.length === 0) {
+    if (!Array.isArray(userRows) || userRows.length === 0) {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
-    const user = rows[0] as { id: number; username: string; email: string; role: string };
+    const user = userRows[0] as { id: number; username: string; email: string; role: string };
 
     // Generate new access token (~15m)
     const newAccessToken = signAccessToken({ 
@@ -204,16 +212,19 @@ export const refreshToken = async (req: AuthRequest, res: Response) => {
       path: '/',
     });
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      message: 'Access token refreshed successfully',
+      message: 'Token refreshed successfully',
       data: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
         accessToken: newAccessToken,
         tokenType: 'Bearer',
-        expiresIn: 15 * 60,
+        expiresIn: 15 * 60, // 15 minutes in seconds
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+        },
       },
     });
   } catch (error) {

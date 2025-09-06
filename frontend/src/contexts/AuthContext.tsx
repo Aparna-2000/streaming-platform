@@ -1,12 +1,21 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import { User, AuthContextType, LoginResponse } from '../types';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { authService } from '../services/api';
+import { tabSync } from '../utils/tabSync';
+import { User } from '../types';
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  login: (username: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
+  checkAuth: () => Promise<void>;
+}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = (): AuthContextType => {
+export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
@@ -20,7 +29,97 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Check for existing token and validate user on mount
+  // Listen for cross-tab auth events
+  useEffect(() => {
+    const handleCrossTabLogin = (event: CustomEvent) => {
+      setUser(event.detail.user);
+      setLoading(false);
+    };
+
+    const handleCrossTabLogout = () => {
+      setUser(null);
+      setLoading(false);
+    };
+
+    const handleCrossTabTokenRefresh = (event: CustomEvent) => {
+      // Token updated, user state remains the same
+      console.log('Token refreshed in another tab');
+    };
+
+    window.addEventListener('auth:login', handleCrossTabLogin as EventListener);
+    window.addEventListener('auth:logout', handleCrossTabLogout);
+    window.addEventListener('auth:token-refresh', handleCrossTabTokenRefresh as EventListener);
+
+    return () => {
+      window.removeEventListener('auth:login', handleCrossTabLogin as EventListener);
+      window.removeEventListener('auth:logout', handleCrossTabLogout);
+      window.removeEventListener('auth:token-refresh', handleCrossTabTokenRefresh as EventListener);
+    };
+  }, []);
+
+  const checkAuth = async (): Promise<void> => {
+    try {
+      setLoading(true);
+      const user = await authService.getCurrentUser();
+      setUser(user);
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const login = async (username: string, password: string): Promise<void> => {
+    try {
+      setLoading(true);
+      const response = await authService.login({ username, password });
+      console.log('AuthContext: Login response:', response);
+      if (response.success && response.data) {
+        const userData = response.data;
+        console.log('AuthContext: User data:', userData);
+        
+        // Store access token first
+        localStorage.setItem('accessToken', userData.accessToken);
+        
+        // Update user state - check if user is nested
+        const user = userData.user || userData;
+        console.log('AuthContext: Setting user:', user);
+        setUser(user);
+        
+        // Broadcast login to other tabs
+        tabSync.broadcastLogin(user, userData.accessToken);
+      } else {
+        throw new Error(response.message || 'Login failed');
+      }
+    } catch (error) {
+      console.error('Login failed:', error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = async (): Promise<void> => {
+    try {
+      setLoading(true);
+      await authService.logout();
+      setUser(null);
+      
+      // Broadcast logout to other tabs
+      tabSync.broadcastLogout();
+      
+      // Clear stored tokens
+      localStorage.removeItem('accessToken');
+    } catch (error) {
+      console.error('Logout failed:', error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Check authentication status on mount
   useEffect(() => {
     const initializeAuth = async () => {
       const token = localStorage.getItem('accessToken');
@@ -47,81 +146,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     initializeAuth();
   }, []);
 
-  const login = async (username: string, password: string): Promise<LoginResponse> => {
-    try {
-      if (!username || !password) {
-        return { success: false, message: 'Please enter both username and password' };
-      }
-      
-      setLoading(true);
-      console.log('AuthContext: Attempting login...');
-      const response = await authService.login({ username, password });
-      console.log('AuthContext: Login response received:', response);
-      
-      if (response.success) {
-        // If we have user data in the response, use it
-        if (response.data?.user) {
-          setUser(response.data.user);
-          console.log('AuthContext: User set from login response');
-        } else {
-          // If login was successful but no user data, create a minimal user object
-          const minimalUser: User = { 
-            id: 0, // Temporary ID, should be replaced by actual ID from backend
-            username,
-            email: `${username}@example.com` // Default email since it's required
-          };
-          setUser(minimalUser);
-          console.log('AuthContext: Created minimal user from username');
-        }
-        return { success: true };
-      }
-      
-      // If we get here, login was not successful
-      const errorMessage = response.message || 'Invalid username or password';
-      console.error('AuthContext: Login failed:', errorMessage);
-      return { 
-        success: false, 
-        message: errorMessage
-      };
-      
-    } catch (error: any) {
-      console.error('AuthContext: Login error:', error);
-      const errorMessage = error.response?.data?.message || 
-                         error.message || 
-                         'An unexpected error occurred during login';
-      return { 
-        success: false, 
-        message: errorMessage
-      };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const logout = async (): Promise<void> => {
-    try {
-      setLoading(true);
-      await authService.logout();
-      setUser(null);
-      // Clear any stored tokens
-      localStorage.removeItem('accessToken');
-    } catch (error) {
-      console.error('Logout failed:', error);
-      throw error; // Re-throw to allow error handling in components
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const value: AuthContextType = {
     user,
+    loading,
     login,
     logout,
-    loading,
-    checkAuthStatus: async () => {
-      // This is a no-op now since we're not using /auth/me
-      // It's kept for backward compatibility
-    },
+    checkAuth,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

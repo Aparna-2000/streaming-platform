@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Form, Field } from 'react-final-form';
 import {
   Box,
@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import { LoginFormData } from '../types';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 interface LoginFormProps {
   onSuccess?: () => void;
@@ -35,20 +36,29 @@ const validate = (values: LoginFormData) => {
 };
 
 const LoginForm: React.FC<LoginFormProps> = ({ onSuccess }) => {
-  const { login, loading } = useAuth();
+  const { login, loading, user } = useAuth();
+  const navigate = useNavigate();
   const [error, setError] = useState<string>('');
+  const [loginAttempted, setLoginAttempted] = useState(false);
+
+  // Handle navigation after successful login
+  useEffect(() => {
+    if (loginAttempted && user) {
+      console.log('LoginForm: User authenticated, navigating directly to dashboard');
+      navigate('/dashboard');
+      onSuccess?.();
+      setLoginAttempted(false);
+    }
+  }, [user, loginAttempted, onSuccess, navigate]);
 
   const handleSubmit = async (values: LoginFormData) => {
     setError('');
+    setLoginAttempted(true);
     try {
-      const response = await login(values.username, values.password);
-      if (response.success) {
-        onSuccess?.();
-      } else {
-        setError(response.message || 'Invalid username or password');
-      }
+      await login(values.username, values.password);
     } catch (err) {
       setError('Login failed. Please try again.');
+      setLoginAttempted(false);
     }
   };
 

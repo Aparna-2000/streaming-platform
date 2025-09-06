@@ -33,7 +33,10 @@ const AppContent: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
+  console.log('AppContent: Current user state:', user);
+
   const handleLoginSuccess = () => {
+    console.log('App: handleLoginSuccess called, navigating to dashboard');
     // Use React Router navigation instead of window.location to avoid page reload
     navigate('/dashboard');
   };

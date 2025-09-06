@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import { User, LoginFormData, ApiResponse, WeatherData } from '../types';
+import { tabSync } from '../utils/tabSync';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -15,10 +16,11 @@ const handleApiError = (error: any, defaultMessage: string) => {
 // Create axios instance
 const api = axios.create({
   baseURL: API_BASE_URL,
+  timeout: 10000,
+  withCredentials: true, // Important for HttpOnly cookies
   headers: {
     'Content-Type': 'application/json',
   },
-  withCredentials: true, // Important for cookies/sessions
 });
 
 // Add auth token to requests if it exists
@@ -77,6 +79,13 @@ api.interceptors.response.use(
         const refreshResponse = await authService.refreshToken();
         if (refreshResponse.success && refreshResponse.data?.accessToken) {
           const newToken = refreshResponse.data.accessToken;
+          
+          // Update localStorage
+          localStorage.setItem('accessToken', newToken);
+          
+          // Broadcast token refresh to other tabs
+          tabSync.broadcastTokenRefresh(newToken);
+          
           processQueue(null, newToken);
           
           // Retry original request with new token
@@ -90,6 +99,10 @@ api.interceptors.response.use(
       } catch (refreshError) {
         processQueue(refreshError, null);
         localStorage.removeItem('accessToken');
+        
+        // Broadcast logout to other tabs
+        tabSync.broadcastLogout();
+        
         if (!window.location.pathname.includes('/login')) {
           window.location.href = '/login';
         }
