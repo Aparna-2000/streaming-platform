@@ -1,33 +1,44 @@
-import { Router, Response, NextFunction } from 'express';
+// Path: backend/src/controllers/authController.ts
+import { Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { validationResult } from 'express-validator';
 import { pool } from '../config/database';
 import { AuthRequest } from '../middleware/auth';
 import { OkPacket } from 'mysql2';
+import { signAccessToken } from '../utils/jwt';
 
-const router: Router = Router();
-
-// Define JWT secrets and expiry times
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+// Refresh-token config (access token handled by signAccessToken -> 15m by default)
 const REFRESH_SECRET = process.env.REFRESH_SECRET || 'fallback-refresh-secret';
-
-// expiresIn format: '15m', '30d', '24h', etc.
-const ACCESS_TOKEN_EXPIRY = '15m'; 
 const REFRESH_TOKEN_EXPIRY = '7d';
 
+/**
+ * POST /auth/login
+ * Body: { username: string, password: string }
+ * - Verifies user credentials
+ * - Issues short-lived access token (~15m via signAccessToken)
+ * - Issues long-lived refresh token (7d) in HttpOnly cookie
+ * - Optionally sets access token cookie (HttpOnly) for same-site usage
+ */
 export const login = async (req: AuthRequest, res: Response) => {
+  console.log('Login attempt:', req.body.username); // Debug log
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Invalid input', errors: errors.array() });
+      console.log('Validation errors:', errors.array()); // Debug log
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid input', 
+        errors: errors.array() 
+      });
     }
 
-    const { username, password } = req.body;
+    const { username, password } = req.body as { username?: string; password?: string };
+    console.log('Processing login for user:', username); // Debug log
 
     // Get user from database
     const [rows] = await pool.execute(
-      'SELECT id, username, email, password_hash FROM users WHERE username = ?',
+      'SELECT id, username, email, password_hash, role FROM users WHERE username = ? LIMIT 1',
       [username]
     );
 
@@ -35,43 +46,35 @@ export const login = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    const user = rows[0] as any;
+    const user = rows[0] as {
+      id: number;
+      username: string;
+      email: string;
+      password_hash: string;
+      role: string;
+    };
 
     // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    const isValidPassword = await bcrypt.compare(password ?? '', user.password_hash);
     if (!isValidPassword) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Generate JWT tokens
-    const accessToken = jwt.sign(
-      { 
-        userId: user.id,
-        username: user.username,
-        tokenType: 'access' 
-      },
-      JWT_SECRET,
-      { expiresIn: ACCESS_TOKEN_EXPIRY }
-    );
+    // Generate tokens
+    // Access token (~15m) via util (adds issuer/audience if configured)
+    const accessToken = signAccessToken({ 
+      sub: String(user.id),
+      role: user.role 
+    });
 
+    // Refresh token (7d) signed with dedicated secret
     const refreshToken = jwt.sign(
-      { 
-        userId: user.id,
-        username: user.username,
-        tokenType: 'refresh' 
-      },
+      { userId: user.id, username: user.username, tokenType: 'refresh' },
       REFRESH_SECRET,
       { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
 
-    // Store user in session
-    req.session.user = {
-      id: user.id,
-      username: user.username,
-      email: user.email
-    };
-
-    // Set the refresh token in an HttpOnly cookie
+    // HttpOnly cookies (keep for your front-end flow)
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -80,7 +83,7 @@ export const login = async (req: AuthRequest, res: Response) => {
       path: '/',
     });
 
-    // Set access token in a cookie
+    // Optional: set access token as HttpOnly cookie (aligns with your middleware that reads cookies)
     res.cookie('token', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -89,42 +92,47 @@ export const login = async (req: AuthRequest, res: Response) => {
       path: '/',
     });
 
-    // Return the user data (without tokens)
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Login successful',
       data: {
         id: user.id,
         username: user.username,
         email: user.email,
+        role: user.role,
+        accessToken, // also return for clients that store it elsewhere
+        tokenType: 'Bearer',
+        expiresIn: 15 * 60, // seconds
       },
     });
-
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ success: false, message: 'An error occurred during login' });
+    return res.status(500).json({ success: false, message: 'An error occurred during login' });
   }
 };
 
-// Refresh token endpoint
+/**
+ * POST /auth/refresh-token
+ * - Verifies refresh token from HttpOnly cookie
+ * - Issues a new short-lived access token
+ */
 export const refreshToken = async (req: AuthRequest, res: Response) => {
-  const refreshToken = req.cookies.refreshToken;
-  
+  const refreshToken = req.cookies?.refreshToken;
+
   if (!refreshToken) {
     return res.status(401).json({ success: false, message: 'Refresh token not provided' });
   }
 
   try {
     const decoded = jwt.verify(refreshToken, REFRESH_SECRET) as any;
-    
-    // Verify it is a refresh token
+
     if (decoded.tokenType !== 'refresh') {
       return res.status(403).json({ success: false, message: 'Invalid token type' });
     }
 
-    // Get user from database
+    // Ensure the user still exists
     const [rows] = await pool.execute(
-      'SELECT id, username, email FROM users WHERE id = ?',
+      'SELECT id, username, email, role FROM users WHERE id = ? LIMIT 1',
       [decoded.userId]
     );
 
@@ -132,27 +140,15 @@ export const refreshToken = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
-    const user = rows[0] as any;
+    const user = rows[0] as { id: number; username: string; email: string; role: string };
 
-    // Update session
-    req.session.user = {
-      id: user.id,
-      username: user.username,
-      email: user.email
-    };
+    // Generate new access token (~15m)
+    const newAccessToken = signAccessToken({ 
+      sub: String(user.id),
+      role: user.role 
+    });
 
-    // Generate new access token
-    const newAccessToken = jwt.sign(
-      { 
-        userId: user.id, 
-        username: user.username, 
-        tokenType: 'access' 
-      },
-      JWT_SECRET,
-      { expiresIn: ACCESS_TOKEN_EXPIRY }
-    );
-
-    // Set new access token in cookie
+    // Update access-token cookie (optional)
     res.cookie('token', newAccessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -161,63 +157,79 @@ export const refreshToken = async (req: AuthRequest, res: Response) => {
       path: '/',
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Access token refreshed successfully',
       data: {
         id: user.id,
         username: user.username,
-        email: user.email
-      }
+        email: user.email,
+        accessToken: newAccessToken,
+        tokenType: 'Bearer',
+        expiresIn: 15 * 60,
+      },
     });
-    
   } catch (error) {
     console.error('Refresh token error:', error);
-    // Clear the expired or invalid token cookie
     res.clearCookie('refreshToken');
     res.clearCookie('token');
     return res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
   }
 };
 
-export const logout = (req: AuthRequest, res: Response) => {
-  // Clear the session
-  req.session.destroy((err) => {
-    if (err) {
-      console.error('Error destroying session:', err);
-      return res.status(500).json({ success: false, message: 'Error logging out' });
-    }
-    
-    // Clear the cookies
-    res.clearCookie('sid'); // Session ID cookie
-    res.clearCookie('token');
-    res.clearCookie('refreshToken');
-    
-    res.status(200).json({ success: true, message: 'Logged out successfully' });
-  });
+/**
+ * POST /auth/logout
+ * - Clears auth cookies
+ */
+export const logout = (_req: AuthRequest, res: Response) => {
+  // Stateless JWTs: no server-side session to destroy
+  res.clearCookie('token');
+  res.clearCookie('refreshToken');
+  // If you previously used session cookies:
+  res.clearCookie('sid');
+  return res.status(200).json({ success: true, message: 'Logged out successfully' });
 };
 
+/**
+ * GET /auth/me
+ * - Returns the user attached by authenticateToken middleware
+ */
 export const getCurrentUser = (req: AuthRequest, res: Response) => {
-  // The user information is already available via the authenticateToken middleware
   if (!req.user) {
     return res.status(401).json({ success: false, message: 'Not authenticated' });
   }
 
-  res.status(200).json({
+  return res.json({
     success: true,
-    message: 'User info retrieved successfully',
-    data: req.user,
+    user: {
+      id: req.user.sub,
+      username: req.user.username,
+      email: req.user.email,
+      role: req.user.role
+    },
   });
 };
 
+/**
+ * POST /auth/register
+ * Body: { username, email, password }
+ * - Creates user
+ * - Issues access token (~15m) and sets refresh token cookie (7d)
+ */
 export const register = async (req: AuthRequest, res: Response) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Invalid input', errors: errors.array() });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid input', errors: errors.array() });
     }
 
-    const { username, email, password } = req.body;
+    const { username, email, password } = req.body as {
+      username?: string;
+      email?: string;
+      password?: string;
+    };
 
     // Check if user or email already exists
     const [existingUsers] = await pool.execute(
@@ -231,50 +243,50 @@ export const register = async (req: AuthRequest, res: Response) => {
 
     // Hash password
     const saltRounds = 12;
-    const password_hash = await bcrypt.hash(password, saltRounds);
+    const password_hash = await bcrypt.hash(password ?? '', saltRounds);
 
     // Insert new user
     const [result] = await pool.execute<OkPacket>(
-      'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-      [username, email, password_hash]
+      'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
+      [username, email, password_hash, 'user'] // Default role is 'user'
     );
 
     const userId = result.insertId;
 
-    // NEW: Generate both access and refresh tokens
-    const accessToken = jwt.sign(
-      { userId, username, tokenType: 'access' },
-      JWT_SECRET,
-      { expiresIn: ACCESS_TOKEN_EXPIRY }
-    );
-    
+    // Issue tokens
+    const accessToken = signAccessToken({ sub: String(userId) });
+
     const refreshToken = jwt.sign(
       { userId, username, tokenType: 'refresh' },
       REFRESH_SECRET,
       { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
 
-    // NEW: Set the refresh token as a secure HttpOnly cookie
+    // Set refresh token cookie
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/',
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'User registered successfully',
       data: {
         id: userId,
         username,
         email,
-        accessToken: accessToken, // sxSend access token to client
-      }
+        accessToken, // send access token to client
+        tokenType: 'Bearer',
+        expiresIn: 15 * 60,
+      },
     });
-
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ success: false, message: 'An error occurred during registration' });
+    return res
+      .status(500)
+      .json({ success: false, message: 'An error occurred during registration' });
   }
 };

@@ -1,129 +1,148 @@
-import express, { Express, Request, Response, NextFunction } from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import cookieParser from 'cookie-parser';
-import session from 'express-session';
-import dotenv from 'dotenv';
-import { login, register, refreshToken, logout, getCurrentUser } from './controllers/authController';
-import { authenticateToken, AuthRequest } from './middleware/auth';
+import express, { Express, Request, Response, NextFunction } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
+import dotenv from "dotenv";
+import { login, register, refreshToken, logout, getCurrentUser } from "./controllers/authController";
+import { authenticateToken, AuthRequest } from "./middleware/auth";
 
-// Load environment variables
+// Load environment variables early
 dotenv.config();
 
 const app: Express = express();
 const PORT = process.env.PORT || 5000;
+const isProduction = process.env.NODE_ENV === "production";
 
-// Security middleware
-app.use(helmet());
-// CORS configuration
-const corsOptions = {
-  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    const allowedOrigins = [
-      'http://localhost:3000',
-      'https://localhost:3000',
-      ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : [])
-    ];
-    
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+// Trust first proxy (important if behind a proxy like nginx, Heroku, etc.)
+app.set('trust proxy', 1);
+
+/**
+ * Security middleware
+ * - helmet: sensible security headers
+ * - CORS: allow local dev + configured frontend
+ */
+app.disable("x-powered-by");
+app.use(
+  helmet({
+    // If you serve images or other cross-origin assets, you may need this:
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+const allowedOrigins = new Set<string>([
+  "http://localhost:3000",
+  "https://localhost:3000",
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+]);
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no Origin (e.g., curl, mobile apps, Postman)
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Requested-With'],
-  exposedHeaders: ['set-cookie']
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Requested-With"],
+  exposedHeaders: ["set-cookie"],
 };
-
 app.use(cors(corsOptions));
+// Explicit preflight for edge cases
+app.options("*", cors(corsOptions));
 
-// Rate limiting (temporarily disabled for debugging)
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: process.env.NODE_ENV === 'production' ? 100 : 1000 // Higher limit for development
-// });
-// app.use(limiter);
+/**
+ * Rate limiting
+ * - Keep generous limits in dev, tighter in prod
+ */
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: { success: false, message: 'Too many requests, please try again later.' }
+});
 
-// Request logging for debugging
-app.use((req, res, next) => {
-  if (req.url.includes('/auth/me')) {
-    console.log(`🔍 GET /auth/me request at ${new Date().toISOString()}`);
+// Apply rate limiting to all requests
+app.use(limiter);
+
+/**
+ * Request logging (minimal, targeted)
+ */
+app.use((req, _res, next) => {
+  if (req.url.includes("/auth/me") && req.method === "GET") {
+    console.log(`🔍 GET /auth/me @ ${new Date().toISOString()}`);
   }
-  if (req.url.includes('/auth/login') && req.method === 'POST') {
-    console.log(`🔐 POST /auth/login request at ${new Date().toISOString()}`);
+  if (req.url.includes("/auth/login") && req.method === "POST") {
+    console.log(`🔐 POST /auth/login @ ${new Date().toISOString()}`);
   }
   next();
 });
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+/**
+ * Parsers
+ */
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Session configuration with 15-minute expiration
-const SESSION_EXPIRATION_MS = 15 * 60 * 1000; // 15 minutes
-const isProduction = process.env.NODE_ENV === 'production';
+/**
+ * IMPORTANT:
+ * - No server-side session storage. We rely on **JWT access tokens (~15 min)**.
+ * - `authenticateToken` must verify/attach decoded claims to `req.user`.
+ */
 
-app.use(session({
-  name: 'sid',
-  secret: process.env.SESSION_SECRET || 'fallback-session-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: isProduction,
-    httpOnly: true,
-    maxAge: SESSION_EXPIRATION_MS,
-    sameSite: isProduction ? 'none' : 'lax',
-    path: '/',
-    domain: isProduction ? '.yourdomain.com' : undefined // Set this to your domain in production
-  },
-  rolling: true, // Reset the expiration time on every request
-  proxy: isProduction // Trust the reverse proxy for secure cookies in production
-}));
-
-// Trust first proxy in production
+// Trust reverse proxy in production (needed for correct secure cookies, IP rate limiting, etc.)
 if (isProduction) {
-  app.set('trust proxy', 1);
+  app.set("trust proxy", 1);
 }
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+/**
+ * Health check
+ */
+app.get("/health", (_req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Auth routes
-app.post('/auth/register', register);
-app.post('/auth/login', login);
-app.post('/auth/refresh-token', refreshToken);
-app.post('/auth/logout', authenticateToken, logout);
-app.get('/auth/me', authenticateToken, getCurrentUser);
+/**
+ * Auth routes (JWT-based)
+ * - /auth/login issues short-lived access tokens (~15m)
+ * - /auth/refresh-token issues a new access token using a valid refresh token
+ * - /auth/logout can revoke refresh tokens server-side
+ * - /auth/me returns current user from verified JWT
+ */
+app.post("/auth/register", register);
+app.post("/auth/login", login);
+app.post("/auth/refresh-token", refreshToken);
+app.post("/auth/logout", authenticateToken, logout);
+app.get("/auth/me", authenticateToken, getCurrentUser);
 
-// Protected routes example
-app.get('/protected', authenticateToken, (req: AuthRequest, res: Response) => {
-  res.json({ 
-    message: 'This is a protected route',
-    user: req.user 
+/**
+ * Example protected route
+ */
+app.get("/protected", authenticateToken, (req: AuthRequest, res: Response) => {
+  res.json({
+    message: "This is a protected route",
+    user: req.user,
   });
 });
 
-// Error handling middleware
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ 
-    success: false, 
-    message: 'Something went wrong!' 
-  });
+/**
+ * Error handling
+ */
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error(err?.stack || err);
+  // If CORS rejected the origin, return a 403 for clarity
+  if (err?.message === "Not allowed by CORS") {
+    return res.status(403).json({ success: false, message: "CORS: Origin not allowed" });
+  }
+  res.status(500).json({ success: false, message: "Something went wrong!" });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
+/**
+ * 404 handler
+ */
+app.use("*", (req, res) => {
   console.log(`❌ 404 - Route not found: ${req.method} ${req.originalUrl}`);
-  res.status(404).json({ 
-    success: false, 
-    message: 'Route not found' 
-  });
+  res.status(404).json({ success: false, message: "Route not found" });
 });
 
 app.listen(PORT, () => {

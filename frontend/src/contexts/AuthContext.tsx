@@ -20,13 +20,31 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // No initial auth check - we'll rely on the login response
+  // Check for existing token and validate user on mount
   useEffect(() => {
-    // Check for existing token on mount
-    const token = localStorage.getItem('accessToken');
-    if (!token) {
-      setLoading(false);
-    }
+    const initializeAuth = async () => {
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        // Try to get current user info from the backend
+        const response = await authService.getCurrentUser();
+        if (response) {
+          setUser(response);
+        }
+      } catch (error) {
+        console.error('Failed to validate existing token:', error);
+        // Clear invalid token
+        localStorage.removeItem('accessToken');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
   }, []);
 
   const login = async (username: string, password: string): Promise<LoginResponse> => {

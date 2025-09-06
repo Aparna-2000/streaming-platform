@@ -84,17 +84,21 @@ const authService = {
     }
   },
 
-  getCurrentUser(): User | null {
-    const token = localStorage.getItem('accessToken');
-    if (!token) return null;
-    
-    // In a real app, you would decode the JWT or make an API call to get user info
-    // For now, return a minimal user object
-    return {
-      id: 0,
-      username: 'user',
-      email: 'user@example.com'
-    };
+  async getCurrentUser(): Promise<User | null> {
+    try {
+      const token = localStorage.getItem('accessToken');
+      if (!token) return null;
+      
+      const response = await api.get('/auth/me');
+      if (response.data.success && response.data.user) {
+        return response.data.user;
+      }
+      return null;
+    } catch (error) {
+      // Token is invalid, remove it
+      localStorage.removeItem('accessToken');
+      return null;
+    }
   },
 
   isAuthenticated(): boolean {
@@ -163,7 +167,7 @@ const testLogin = async () => {
   
   if (validCreds.success) {
     console.log('🔑 Access Token:', localStorage.getItem('accessToken'));
-    console.log('👤 Current User:', authService.getCurrentUser());
+    console.log('👤 Current User:', await authService.getCurrentUser());
     console.log('🔒 Is Authenticated:', authService.isAuthenticated());
     
     // Test 4: Try accessing protected route
@@ -181,7 +185,7 @@ const testLogin = async () => {
     const logoutResult = await authService.logout();
     console.log('Logout result:', logoutResult);
     console.log('🔑 Access Token after logout:', localStorage.getItem('accessToken'));
-    console.log('👤 Current User after logout:', authService.getCurrentUser());
+    console.log('👤 Current User after logout:', await authService.getCurrentUser());
     console.log('🔒 Is Authenticated after logout:', authService.isAuthenticated());
   }
 };
