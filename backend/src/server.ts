@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { login, register, refreshToken, logout, getCurrentUser } from "./controllers/authController";
 import { authenticateToken } from './middleware/auth';
 import { requireAuth } from './middleware/requireAuth';
+import securityRoutes from './routes/security';
 import validator from 'validator';
 import xss from 'xss';
 
@@ -14,6 +15,7 @@ import xss from 'xss';
 dotenv.config();
 
 const app: Express = express();
+
 const PORT = process.env.PORT || 5000;
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -91,12 +93,7 @@ app.use(cookieParser());
  * IMPORTANT:
  * - No server-side session storage. We rely on **JWT access tokens (~15 min)**.
  * - `authenticateToken` must verify/attach decoded claims to `req.user`.
- */
-
-// Trust reverse proxy in production (needed for correct secure cookies, IP rate limiting, etc.)
-if (isProduction) {
-  app.set("trust proxy", 1);
-}
+ 
 
 /**
  * Health check
@@ -141,6 +138,8 @@ function sanitizeInputs(allowedInputs: string[]) {
     next();
   };
 }
+
+app.use('/security', securityRoutes);
 
 /**
  * Auth routes (JWT-based)

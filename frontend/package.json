@@ -21,7 +21,8 @@
     "react-dom": "^18.2.0",
     "react-final-form": "^6.5.9",
     "react-router-dom": "^6.20.1",
-    "web-vitals": "^2.1.4"
+    "web-vitals": "^2.1.4",
+    "zustand": "^4.4.7"
   },
   "scripts": {
     "start": "HTTPS=true react-scripts start",

@@ -19,7 +19,7 @@ export class TabSyncManager {
           this.handleCrossTabLogin(data);
           break;
         case 'LOGOUT':
-          this.handleCrossTabLogout();
+          this.handleCrossTabLogout(data);
           break;
         case 'TOKEN_REFRESH':
           this.handleCrossTabTokenRefresh(data);
@@ -48,14 +48,24 @@ export class TabSyncManager {
   }
 
   // Broadcast logout to other tabs
-  broadcastLogout() {
+  broadcastLogout(securityAlert?: boolean) {
+    console.log('🚨 TabSync: Broadcasting logout, securityAlert:', securityAlert);
     const message = {
       type: 'LOGOUT',
-      data: { timestamp: Date.now() }
+      data: { timestamp: Date.now(), securityAlert }
     };
     
+    console.log('🚨 TabSync: Logout message:', message);
     this.channel.postMessage(message);
     localStorage.setItem(this.storageKey, JSON.stringify(message));
+    
+    // Also clear the access token immediately in current tab
+    localStorage.removeItem('accessToken');
+    console.log('🚨 TabSync: Access token cleared');
+    
+    // IMPORTANT: BroadcastChannel doesn't send to self, so handle logout in current tab too
+    console.log('🚨 TabSync: Handling logout in current tab...');
+    this.handleCrossTabLogout(message.data);
   }
 
   // Broadcast token refresh to other tabs
@@ -76,11 +86,12 @@ export class TabSyncManager {
     window.dispatchEvent(new CustomEvent('auth:login', { detail: data }));
   }
 
-  private handleCrossTabLogout() {
-    // Clear current tab's auth state
+  private async handleCrossTabLogout(data: any) {
+    console.log('🚨 TabSync: handleCrossTabLogout called with data:', data);
     localStorage.removeItem('accessToken');
-    // Trigger auth context update
-    window.dispatchEvent(new CustomEvent('auth:logout'));
+    console.log('🚨 TabSync: Dispatching auth:logout event with detail:', data);
+    window.dispatchEvent(new CustomEvent('auth:logout', { detail: data }));
+    console.log('🚨 TabSync: auth:logout event dispatched');
   }
 
   private handleCrossTabTokenRefresh(data: any) {
@@ -97,7 +108,7 @@ export class TabSyncManager {
         this.handleCrossTabLogin(data.data);
         break;
       case 'LOGOUT':
-        this.handleCrossTabLogout();
+        this.handleCrossTabLogout(data.data);
         break;
       case 'TOKEN_REFRESH':
         this.handleCrossTabTokenRefresh(data.data);

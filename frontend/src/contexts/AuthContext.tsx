@@ -36,9 +36,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setLoading(false);
     };
 
-    const handleCrossTabLogout = () => {
+    const handleCrossTabLogout = async (event: CustomEvent) => {
+      console.log('🚨 AuthContext: Cross-tab logout event received:', event);
+      console.log('🚨 AuthContext: Event detail:', event.detail);
+      console.log('🚨 AuthContext: Security alert flag:', event.detail?.securityAlert);
+      
+      // Immediately clear state to prevent race conditions
       setUser(null);
       setLoading(false);
+      
+      if (event.detail?.securityAlert) {
+        console.log('🚨 AuthContext: Showing security alert popup...');
+        alert('🚨 SECURITY ALERT: Suspicious activity detected. All sessions terminated.');
+        console.log('🚨 AuthContext: Security alert popup shown');
+      }
+      
+      console.log('🚨 AuthContext: Redirecting to login...');
+      // Use setTimeout to ensure state updates are processed first
+      setTimeout(() => {
+        window.location.replace('/login');
+      }, 0);
     };
 
     const handleCrossTabTokenRefresh = (event: CustomEvent) => {
@@ -47,12 +64,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     window.addEventListener('auth:login', handleCrossTabLogin as EventListener);
-    window.addEventListener('auth:logout', handleCrossTabLogout);
+    window.addEventListener('auth:logout', handleCrossTabLogout as unknown as EventListener);
     window.addEventListener('auth:token-refresh', handleCrossTabTokenRefresh as EventListener);
 
     return () => {
       window.removeEventListener('auth:login', handleCrossTabLogin as EventListener);
-      window.removeEventListener('auth:logout', handleCrossTabLogout);
+      window.removeEventListener('auth:logout', handleCrossTabLogout as unknown as EventListener);
       window.removeEventListener('auth:token-refresh', handleCrossTabTokenRefresh as EventListener);
     };
   }, []);
@@ -122,23 +139,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // Check authentication status on mount
   useEffect(() => {
     const initializeAuth = async () => {
+      console.log('AuthContext: Initializing auth...');
       const token = localStorage.getItem('accessToken');
+      
       if (!token) {
+        console.log('AuthContext: No token found, setting loading to false');
         setLoading(false);
         return;
       }
 
+      console.log('AuthContext: Token found, validating...');
       try {
         // Try to get current user info from the backend
         const response = await authService.getCurrentUser();
         if (response) {
+          console.log('AuthContext: Token valid, setting user:', response);
           setUser(response);
         }
-      } catch (error) {
-        console.error('Failed to validate existing token:', error);
-        // Clear invalid token
+      } catch (error: any) {
+        console.error('AuthContext: Token validation failed:', error);
+        
+        // Let the axios interceptor handle security breaches via TabSync
+        // Regular token validation failure - just clear tokens
         localStorage.removeItem('accessToken');
+        setUser(null);
       } finally {
+        console.log('AuthContext: Setting loading to false');
         setLoading(false);
       }
     };

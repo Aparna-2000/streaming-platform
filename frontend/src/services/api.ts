@@ -1,6 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import { User, LoginFormData, ApiResponse, WeatherData } from '../types';
 import { tabSync } from '../utils/tabSync';
+import { publishSecurityAlert } from '../utils/securityBus';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -56,6 +57,37 @@ api.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as any;
+
+    // Debug logging for all errors
+    console.log('🔍 API Interceptor: Error caught', {
+      status: error.response?.status,
+      data: error.response?.data,
+      url: originalRequest?.url,
+      method: originalRequest?.method
+    });
+
+    // Handle security breach alerts (403 with securityAlert flag)
+    if (error.response?.status === 403 && 
+        (error.response?.data as any)?.securityAlert && 
+        (error.response?.data as any)?.action === 'FORCE_LOGOUT') {
+      console.log('🚨 API Interceptor: Security breach detected, triggering logout');
+      console.log('🚨 API Interceptor: Full error response:', error.response);
+      console.log('🚨 API Interceptor: Response data:', error.response.data);
+      console.log('🚨 API Interceptor: Security alert flag:', (error.response?.data as any)?.securityAlert);
+      console.log('🚨 API Interceptor: Action:', (error.response?.data as any)?.action);
+      
+      // Clear tokens immediately
+      localStorage.removeItem('accessToken');
+      
+      // Broadcast security logout to all tabs
+      console.log('🚨 API Interceptor: Broadcasting security logout...');
+      tabSync.broadcastLogout(true);
+      
+      // Publish security alert
+      publishSecurityAlert((error.response?.data as any)?.securityAlert);
+      
+      return Promise.reject(error);
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {

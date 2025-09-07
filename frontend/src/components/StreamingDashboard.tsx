@@ -10,6 +10,7 @@ import {
 } from '@mui/material';
 import { PlayArrow, Movie, Tv, TrendingUp } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import SecurityTest from './SecurityTest';
 
 const StreamingDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -30,6 +31,8 @@ const StreamingDashboard: React.FC = () => {
       <Typography variant="h6" color="text.secondary" gutterBottom sx={{ mb: 3 }}>
         Streaming Platform Dashboard
       </Typography>
+
+      <SecurityTest />
 
       {/* Stats Cards */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
