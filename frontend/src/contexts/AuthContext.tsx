@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/api';
 import { tabSync } from '../utils/tabSync';
 import { User } from '../types';
@@ -28,6 +29,7 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   // Listen for cross-tab auth events
   useEffect(() => {
@@ -54,7 +56,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.log('🚨 AuthContext: Redirecting to login...');
       // Use setTimeout to ensure state updates are processed first
       setTimeout(() => {
-        window.location.replace('/login');
+        navigate('/login', { replace: true });
       }, 0);
     };
 
@@ -72,7 +74,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       window.removeEventListener('auth:logout', handleCrossTabLogout as unknown as EventListener);
       window.removeEventListener('auth:token-refresh', handleCrossTabTokenRefresh as EventListener);
     };
-  }, []);
+  }, [navigate]);
 
   const checkAuth = async (): Promise<void> => {
     try {
@@ -92,20 +94,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setLoading(true);
       const response = await authService.login({ username, password });
       console.log('AuthContext: Login response:', response);
+      
       if (response.success && response.data) {
-        const userData = response.data;
-        console.log('AuthContext: User data:', userData);
+        // ApiResponse structure has data nested under 'data' property
+        console.log('AuthContext: Login successful, processing response...');
         
         // Store access token first
-        localStorage.setItem('accessToken', userData.accessToken);
+        if (response.data.accessToken) {
+          localStorage.setItem('accessToken', response.data.accessToken);
+        }
         
-        // Update user state - check if user is nested
-        const user = userData.user || userData;
+        // Update user state
+        const user = response.data.user;
         console.log('AuthContext: Setting user:', user);
         setUser(user);
         
         // Broadcast login to other tabs
-        tabSync.broadcastLogin(user, userData.accessToken);
+        tabSync.broadcastLogin(user, response.data.accessToken);
       } else {
         throw new Error(response.message || 'Login failed');
       }
@@ -128,9 +133,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       // Clear stored tokens
       localStorage.removeItem('accessToken');
+      
+      // Redirect to login page
+      navigate('/login', { replace: true });
     } catch (error) {
       console.error('Logout failed:', error);
-      throw error;
+      // Even if logout fails on server, clear local state and redirect
+      setUser(null);
+      localStorage.removeItem('accessToken');
+      navigate('/login', { replace: true });
     } finally {
       setLoading(false);
     }

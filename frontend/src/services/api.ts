@@ -155,10 +155,25 @@ const authService = {
       const response = await api.post('/auth/login', credentials);
       console.log('✅ Login response:', response.data);
       
-      if (response.data.success && response.data.data?.accessToken) {
-        localStorage.setItem('accessToken', response.data.data.accessToken);
+      // Backend returns accessToken directly in response, store it
+      if (response.data.success && response.data.accessToken) {
+        localStorage.setItem('accessToken', response.data.accessToken);
+        
+        // Transform backend response to match ApiResponse structure
+        return {
+          success: response.data.success,
+          message: response.data.message,
+          data: {
+            user: response.data.user,
+            accessToken: response.data.accessToken
+          }
+        };
+      } else {
+        return {
+          success: false,
+          message: response.data.message || 'Login failed'
+        };
       }
-      return response.data;
     } catch (error: any) {
       return handleApiError(error, 'Login failed. Please check your credentials and try again.');
     }

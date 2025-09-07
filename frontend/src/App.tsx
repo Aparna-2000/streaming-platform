@@ -61,30 +61,86 @@ const AppContent: React.FC = () => {
 
     // 2) Open SSE to receive server-pushed security alerts (only if authenticated)
     if (user) {
-      const url = `${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/security/stream`;
-      sseRef.current = new EventSource(url, { withCredentials: true });
+      const token = localStorage.getItem('accessToken');
+      if (token) {
+        const url = `${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/security/stream?token=${encodeURIComponent(token)}`;
+        console.log(`🔗 SSE: Connecting to ${url} for user ${user.id}`);
+        sseRef.current = new EventSource(url);
 
-      sseRef.current.onmessage = (evt) => {
-        try {
-          const payload = JSON.parse(evt.data);
-          if (payload?.type === 'SECURITY_ALERT') setSecurityAlert(true);
-        } catch {}
-      };
-      
-      sseRef.current.addEventListener('SECURITY_ALERT', (evt: MessageEvent) => {
-        setSecurityAlert(true);
-      });
-      
-      sseRef.current.onerror = () => {
-        // Optional: retry/backoff or silently ignore; browser auto-reconnects
-      };
+        sseRef.current.onopen = () => {
+          console.log('🔗 SSE: Connection opened successfully');
+        };
+
+        sseRef.current.onmessage = (evt) => {
+          console.log('🚨 SSE: Received message:', evt.data);
+          try {
+            const payload = JSON.parse(evt.data);
+            console.log('🚨 SSE: Parsed payload:', payload);
+            if (payload?.type === 'SECURITY_ALERT') {
+              console.log('🚨 SSE: Security alert detected, forcing automatic logout');
+              // Immediately clear tokens and force logout
+              localStorage.removeItem('accessToken');
+              clearAuth();
+              setSecurityAlert(true);
+              // Auto-redirect after showing alert briefly
+              setTimeout(() => {
+                setSecurityAlert(false);
+                navigate('/login', { replace: true });
+              }, 3000); // Show alert for 3 seconds then redirect
+            }
+          } catch (error) {
+            console.error('🚨 SSE: Failed to parse message:', error);
+          }
+        };
+        
+        // Listen for named SECURITY_ALERT events
+        sseRef.current.addEventListener('SECURITY_ALERT', (evt: MessageEvent) => {
+          console.log('🚨 SSE: Received SECURITY_ALERT event:', evt.data);
+          try {
+            const payload = JSON.parse(evt.data);
+            console.log('🚨 SSE: Security alert payload:', payload);
+            // Immediately clear tokens and force logout
+            localStorage.removeItem('accessToken');
+            clearAuth();
+            setSecurityAlert(true);
+            // Auto-redirect after showing alert briefly
+            setTimeout(() => {
+              setSecurityAlert(false);
+              navigate('/login', { replace: true });
+            }, 3000); // Show alert for 3 seconds then redirect
+          } catch (error) {
+            console.error('🚨 SSE: Failed to parse SECURITY_ALERT event:', error);
+            // Even if parsing fails, force logout for security
+            localStorage.removeItem('accessToken');
+            clearAuth();
+            setSecurityAlert(true);
+            setTimeout(() => {
+              setSecurityAlert(false);
+              navigate('/login', { replace: true });
+            }, 3000);
+          }
+        });
+
+        // Listen for ping events
+        sseRef.current.addEventListener('ping', (evt: MessageEvent) => {
+          console.log('🔗 SSE: Received ping:', evt.data);
+        });
+        
+        sseRef.current.onerror = (error) => {
+          console.error('🚨 SSE: Connection error:', error);
+          // Optional: retry/backoff or silently ignore; browser auto-reconnects
+        };
+      }
     }
 
     return () => {
       unsub();
-      sseRef.current?.close();
+      if (sseRef.current) {
+        console.log('🔗 SSE: Closing connection');
+        sseRef.current.close();
+      }
     };
-  }, [setSecurityAlert, user]);
+  }, [setSecurityAlert, user, navigate, clearAuth]);
 
   const handleLoginSuccess = () => {
     console.log('App: handleLoginSuccess called, navigating to dashboard');
@@ -128,11 +184,16 @@ const App: React.FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <AuthProvider>
-        <Router>
+      <Router
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true
+        }}
+      >
+        <AuthProvider>
           <AppContent />
-        </Router>
-      </AuthProvider>
+        </AuthProvider>
+      </Router>
     </ThemeProvider>
   );
 };

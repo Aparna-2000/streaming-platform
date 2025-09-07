@@ -6,7 +6,8 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { login, register, refreshToken, logout, getCurrentUser } from "./controllers/authController";
 import { authenticateToken } from './middleware/auth';
-import { requireAuth } from './middleware/requireAuth';
+import { verifyPasswordForSensitiveOp, changeEmail, changePassword } from './controllers/sessionController';
+import { loginRateLimit, registerRateLimit, refreshRateLimit, passwordRateLimit } from './middleware/authRateLimit';
 import securityRoutes from './routes/security';
 import validator from 'validator';
 import xss from 'xss';
@@ -93,6 +94,8 @@ app.use(cookieParser());
  * IMPORTANT:
  * - No server-side session storage. We rely on **JWT access tokens (~15 min)**.
  * - `authenticateToken` must verify/attach decoded claims to `req.user`.
+ * - Protected routes should use `authenticateToken` middleware.
+ * - Sensitive operations (e.g., password changes) should use `verifyPasswordForSensitiveOp` middleware.
  
 
 /**
@@ -148,11 +151,18 @@ app.use('/security', securityRoutes);
  * - /auth/logout can revoke refresh tokens server-side
  * - /auth/me returns current user from verified JWT
  */
-app.post("/auth/register", sanitizeInputs(['username', 'email', 'password']), register);
-app.post("/auth/login", sanitizeInputs(['username', 'password']), login);
-app.post("/auth/refresh-token", refreshToken);
+app.post("/auth/register", registerRateLimit, sanitizeInputs(['username', 'email', 'password']), register);
+app.post("/auth/login", loginRateLimit, sanitizeInputs(['username', 'password']), login);
+app.post("/auth/refresh-token", refreshRateLimit, refreshToken);
 app.post("/auth/logout", authenticateToken, logout);
 app.get("/auth/me", authenticateToken, getCurrentUser);
+
+/**
+ * Session routes (sensitive operations)
+ */
+app.post("/auth/session/verify-password", authenticateToken, passwordRateLimit, verifyPasswordForSensitiveOp);
+app.post("/auth/session/change-email", authenticateToken, changeEmail);
+app.post("/auth/session/change-password", authenticateToken, changePassword);
 
 /**
  * Example protected route

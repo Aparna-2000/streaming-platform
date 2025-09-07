@@ -7,16 +7,16 @@ import { AuthRequest } from '../middleware/auth';
 import { OkPacket } from 'mysql2';
 import { signAccessToken } from '../utils/jwt';
 import { 
-  generateRefreshToken, 
   storeRefreshToken, 
   verifyRefreshToken, 
-  revokeRefreshToken,
-  revokeAllUserTokens 
+  revokeRefreshToken
 } from '../utils/refreshTokens';
+import { generateDeviceFingerprint } from '../utils/deviceFingerprint';
+import { enforceSingleSession } from './sessionController';
 
 // Refresh-token config (access token handled by signAccessToken -> 15m by default)
 const REFRESH_SECRET = process.env.REFRESH_SECRET || 'fallback-refresh-secret';
-const REFRESH_TOKEN_EXPIRY = '30m'; // updated to match 30m refresh token lifetime
+const REFRESH_TOKEN_EXPIRY = '30m';
 
 /**
  * POST /auth/login
@@ -27,13 +27,9 @@ const REFRESH_TOKEN_EXPIRY = '30m'; // updated to match 30m refresh token lifeti
  * - Optionally sets access token cookie (HttpOnly) for same-site usage
  */
 export const login = async (req: AuthRequest, res: Response) => {
-  console.log(' Login controller called');
-  console.log(' Received body:', req.body);
-  console.log('Login attempt:', req.body.username); // Debug log
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array()); // Debug log
       return res.status(400).json({ 
         success: false, 
         message: 'Invalid input', 
@@ -45,7 +41,6 @@ export const login = async (req: AuthRequest, res: Response) => {
     
     // Validate and sanitize inputs
     if (!username || !password) {
-      console.log(' Missing username or password');
       return res.status(400).json({ 
         success: false, 
         message: 'Username and password are required' 
@@ -54,7 +49,6 @@ export const login = async (req: AuthRequest, res: Response) => {
 
     // Check for invalid characters first (before length validation)
     if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
-      console.log(' Username invalid characters:', username);
       return res.status(400).json({ 
         success: false, 
         message: 'Username can only contain letters, numbers, underscores, hyphens and should not extend 30 characters' 
@@ -63,7 +57,6 @@ export const login = async (req: AuthRequest, res: Response) => {
 
     // Then check length constraints
     if (username.length < 3) {
-      console.log(' Username too short:', username.length);
       return res.status(400).json({ 
         success: false, 
         message: 'Username must be at least 3 characters' 
@@ -71,7 +64,6 @@ export const login = async (req: AuthRequest, res: Response) => {
     }
 
     if (username.length > 30) {
-      console.log(' Username too long:', username.length);
       return res.status(400).json({ 
         success: false, 
         message: 'Username must be no more than 30 characters' 
@@ -79,16 +71,11 @@ export const login = async (req: AuthRequest, res: Response) => {
     }
 
     if (password.length < 6) {
-      console.log(' Password too short:', password.length);
       return res.status(400).json({ 
         success: false, 
         message: 'Password must be at least 6 characters' 
       });
     }
-
-    console.log(' Validation passed, processing login for user:', username); // Debug log
-
-    console.log('Processing login for user:', username); // Debug log
 
     // Get user from database
     const [rows] = await pool.execute(
@@ -114,277 +101,284 @@ export const login = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
+    // Enforce single session (revoke all existing sessions)
+    await enforceSingleSession(user.id);
+
+    // Generate device fingerprint for enhanced security
+    const deviceFingerprint = generateDeviceFingerprint(req);
+
     // Generate tokens
-    // Access token (~15m) via util (adds issuer/audience if configured)
     const accessToken = signAccessToken({ 
       sub: String(user.id),
       role: user.role 
     });
 
-    // Refresh token (30m) signed with dedicated secret
-    const refreshToken = jwt.sign(
+    const refreshTokenValue = jwt.sign(
       { user_id: user.id, username: user.username, tokenType: 'refresh' },
       REFRESH_SECRET,
       { expiresIn: REFRESH_TOKEN_EXPIRY }
     );
 
-    // Store refresh token in database with device/IP binding
+    // Store refresh token with device/IP binding and fingerprint
     const deviceInfo = req.headers['user-agent'] || 'Unknown';
     const ipAddress = req.ip || req.connection.remoteAddress || 'Unknown';
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes to match REFRESH_TOKEN_EXPIRY
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
 
-    await storeRefreshToken(user.id, refreshToken, expiresAt, deviceInfo, ipAddress);
+    await storeRefreshToken(user.id, refreshTokenValue, expiresAt, deviceInfo, ipAddress, deviceFingerprint);
 
-    // HttpOnly cookies (keep for your front-end flow)
-    res.cookie('refreshToken', refreshToken, {
+    // Set secure cookies
+    res.cookie('refreshToken', refreshTokenValue, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 30 * 60 * 1000, // 30 minutes
-      path: '/',
-    });
-
-    // Optional: set access token as HttpOnly cookie (aligns with your middleware that reads cookies)
-    res.cookie('token', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000, // 15 minutes
-      path: '/',
+      sameSite: 'strict',
+      maxAge: 30 * 60 * 1000
     });
 
     return res.status(200).json({
       success: true,
       message: 'Login successful',
-      data: {
+      accessToken,
+      user: {
         id: user.id,
         username: user.username,
         email: user.email,
-        role: user.role,
-        accessToken, // also return for clients that store it elsewhere
-        tokenType: 'Bearer',
-        expiresIn: 15 * 60, // seconds
-      },
+        role: user.role
+      }
     });
+
   } catch (error) {
-    console.error('Login error:', error);
-    return res.status(500).json({ success: false, message: 'An error occurred during login' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 };
 
 /**
  * POST /auth/refresh-token
- * - Verifies refresh token from HttpOnly cookie
- * - Issues a new short-lived access token
+ * Validates refresh token and issues new access token
+ * Enhanced with device/IP binding validation
  */
 export const refreshToken = async (req: AuthRequest, res: Response) => {
-  const refreshToken = req.cookies.refreshToken;
-
-  if (!refreshToken) {
-    return res.status(401).json({ success: false, message: 'No refresh token provided' });
-  }
-
   try {
-    // Verify refresh token from database
-    const tokenData = await verifyRefreshToken(refreshToken);
+    const refreshTokenValue = req.cookies?.refreshToken;
     
-    if (!tokenData) {
-      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+    if (!refreshTokenValue) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'No refresh token provided' 
+      });
     }
 
-    // IP validation - check if request comes from same IP
-    const currentIP = req.ip || req.connection.remoteAddress || 'Unknown';
-    if (tokenData.ip_address && tokenData.ip_address !== currentIP) {
-      console.log(`IP mismatch: stored=${tokenData.ip_address}, current=${currentIP}`);
-      // Strict IP validation (high security)
-      await revokeRefreshToken(refreshToken);
-      return res.status(401).json({ success: false, message: 'Security validation failed' });
+    const result = await verifyRefreshToken(refreshTokenValue, req);
+    
+    if (!result || !result.valid || !result.user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: result?.reason || 'Invalid refresh token' 
+      });
     }
 
-    // Device validation - check User-Agent
-    const currentDevice = req.headers['user-agent'] || 'Unknown';
-    if (tokenData.device_info && tokenData.device_info !== currentDevice) {
-      console.log(`Device mismatch: stored=${tokenData.device_info}, current=${currentDevice}`);
-      // Flexible device validation (usability balance)
-      console.log('Device change detected - logging for analysis');
-      // Could trigger additional auth steps instead of rejection
-    }
+    // TypeScript knows result.user exists here due to the check above
+    const user = result.user;
 
-    // Ensure the user still exists
-    const [userRows] = await pool.execute(
-      'SELECT id, username, email, role FROM users WHERE id = ? LIMIT 1',
-      [tokenData.user_id]
-    );
-
-    if (!Array.isArray(userRows) || userRows.length === 0) {
-      return res.status(401).json({ success: false, message: 'User not found' });
-    }
-
-    const user = userRows[0] as { id: number; username: string; email: string; role: string };
-
-    // Generate new access token (~15m)
+    // Generate new access token
     const newAccessToken = signAccessToken({ 
       sub: String(user.id),
       role: user.role 
     });
 
-    // Update access-token cookie (optional)
-    res.cookie('token', newAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000, // 15 minutes
-      path: '/',
+    return res.status(200).json({
+      success: true,
+      accessToken: newAccessToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      }
     });
 
-    return res.json({
-      success: true,
-      message: 'Token refreshed successfully',
-      data: {
-        accessToken: newAccessToken,
-        tokenType: 'Bearer',
-        expiresIn: 15 * 60, // 15 minutes in seconds
-        user: {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-        },
-      },
-    });
   } catch (error) {
-    console.error('Refresh token error:', error);
-    res.clearCookie('refreshToken');
-    res.clearCookie('token');
-    return res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
   }
 };
 
 /**
  * POST /auth/logout
- * - Clears auth cookies
+ * Revokes refresh token and clears cookies
  */
-export const logout = (_req: AuthRequest, res: Response) => {
-  // Stateless JWTs: no server-side session to destroy
-  res.clearCookie('token');
-  res.clearCookie('refreshToken');
-  // If you previously used session cookies:
-  res.clearCookie('sid');
-  return res.status(200).json({ success: true, message: 'Logged out successfully' });
+export const logout = async (req: AuthRequest, res: Response) => {
+  try {
+    const refreshTokenValue = req.cookies?.refreshToken;
+    
+    if (refreshTokenValue) {
+      await revokeRefreshToken(refreshTokenValue);
+    }
+
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    });
+    
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
 };
 
 /**
  * GET /auth/me
- * - Returns the user attached by authenticateToken middleware
+ * Returns current user information
  */
-export const getCurrentUser = (req: AuthRequest, res: Response) => {
-  if (!req.user) {
-    return res.status(401).json({ success: false, message: 'Not authenticated' });
-  }
+export const getCurrentUser = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
 
-  return res.json({
-    success: true,
-    user: {
-      id: req.user.sub,
-      username: req.user.username,
-      email: req.user.email,
-      role: req.user.role
-    },
-  });
+    const userId = req.user.sub;
+    const [rows] = await pool.execute(
+      'SELECT id, username, email, role FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = rows[0] as { id: number; username: string; email: string; role: string };
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
 };
 
 /**
  * POST /auth/register
- * Body: { username, email, password }
- * - Creates user
- * - Issues access token (~15m) and sets refresh token cookie (30m)
+ * Creates new user account with validation
  */
 export const register = async (req: AuthRequest, res: Response) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Invalid input', errors: errors.array() });
-    }
-
-    const { username, email, password } = req.body as {
-      username?: string;
-      email?: string;
-      password?: string;
-    };
-
-    // Validate and sanitize inputs
-    if (!username || !email || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Username, email, and password are required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid input',
+        errors: errors.array()
       });
     }
 
-    // Check if user or email already exists
+    const { username, email, password } = req.body;
+
+    // Validate inputs
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username, email, and password are required'
+      });
+    }
+
+    // Check username format
+    if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username can only contain letters, numbers, underscores, and hyphens'
+      });
+    }
+
+    // Check username length
+    if (username.length < 3 || username.length > 30) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username must be between 3 and 30 characters'
+      });
+    }
+
+    // Check password length
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters'
+      });
+    }
+
+    // Check if user already exists
     const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE username = ? OR email = ?',
+      'SELECT id FROM users WHERE username = ? OR email = ? LIMIT 1',
       [username, email]
     );
 
     if (Array.isArray(existingUsers) && existingUsers.length > 0) {
-      return res.status(400).json({ success: false, message: 'Username or email already exists' });
+      return res.status(409).json({
+        success: false,
+        message: 'Username or email already exists'
+      });
     }
 
     // Hash password
     const saltRounds = 12;
-    const password_hash = await bcrypt.hash(password ?? '', saltRounds);
+    const passwordHash = await bcrypt.hash(password, saltRounds);
 
     // Insert new user
-    const [result] = await pool.execute<OkPacket>(
+    const [result] = await pool.execute(
       'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-      [username, email, password_hash, 'user'] // Default role is 'user'
-    );
+      [username, email, passwordHash, 'user']
+    ) as [OkPacket, any];
 
     const userId = result.insertId;
-
-    // Issue tokens
-    const accessToken = signAccessToken({ sub: String(userId) });
-
-    const refreshToken = jwt.sign(
-      { userId, username, tokenType: 'refresh' },
-      REFRESH_SECRET,
-      { expiresIn: REFRESH_TOKEN_EXPIRY }
-    );
-
-    // Store refresh token in database with device/IP binding
-    const deviceInfo = req.headers['user-agent'] || 'Unknown';
-    const ipAddress = req.ip || req.connection.remoteAddress || 'Unknown';
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes to match REFRESH_TOKEN_EXPIRY
-
-    await storeRefreshToken(userId, refreshToken, expiresAt, deviceInfo, ipAddress);
-
-    // Set refresh token cookie
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 60 * 1000, // 30 minutes
-      path: '/',
-    });
 
     return res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      data: {
+      user: {
         id: userId,
         username,
         email,
-        accessToken, // send access token to client
-        tokenType: 'Bearer',
-        expiresIn: 15 * 60,
-      },
+        role: 'user'
+      }
     });
+
   } catch (error) {
-    console.error('Registration error:', error);
-    return res
-      .status(500)
-      .json({ success: false, message: 'An error occurred during registration' });
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
   }
 };
