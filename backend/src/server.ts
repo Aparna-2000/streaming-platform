@@ -17,7 +17,7 @@ dotenv.config();
 
 const app: Express = express();
 
-const PORT = process.env.PORT || 5000;
+const PORT = 3001;
 const isProduction = process.env.NODE_ENV === "production";
 
 // Trust first proxy (important if behind a proxy like nginx, Heroku, etc.)
@@ -49,10 +49,11 @@ const corsOptions: cors.CorsOptions = {
     return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Requested-With"],
-  exposedHeaders: ["set-cookie"],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  exposedHeaders: ['Set-Cookie']
 };
+
 app.use(cors(corsOptions));
 // Explicit preflight for edge cases
 app.options("*", cors(corsOptions));
@@ -154,7 +155,7 @@ app.use('/security', securityRoutes);
 app.post("/auth/register", registerRateLimit, sanitizeInputs(['username', 'email', 'password']), register);
 app.post("/auth/login", loginRateLimit, sanitizeInputs(['username', 'password']), login);
 app.post("/auth/refresh-token", refreshRateLimit, refreshToken);
-app.post("/auth/logout", authenticateToken, logout);
+app.post("/auth/logout", logout);
 app.get("/auth/me", authenticateToken, getCurrentUser);
 
 /**

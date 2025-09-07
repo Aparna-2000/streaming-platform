@@ -102,7 +102,7 @@ export const login = async (req: AuthRequest, res: Response) => {
     }
 
     // Enforce single session (revoke all existing sessions)
-    await enforceSingleSession(user.id);
+    await enforceSingleSession(user.id, req);
 
     // Generate device fingerprint for enhanced security
     const deviceFingerprint = generateDeviceFingerprint(req);

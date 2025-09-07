@@ -31,14 +31,15 @@ const WeatherDashboard: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      const response = await weatherService.getWeatherData(cityName);
-      if (response.success && response.data) {
-        setWeatherData(response.data);
+      const response = await weatherService.getWeather(cityName);
+      if (response) {
+        setWeatherData(response);
       } else {
-        setError(response.message || 'Failed to fetch weather data');
+        setError('Failed to fetch weather data');
       }
-    } catch (err) {
-      setError('Failed to fetch weather data');
+    } catch (error: any) {
+      console.error('Weather fetch error:', error);
+      setError(error.response?.data?.message || error.message || 'Failed to fetch weather data');
     } finally {
       setLoading(false);
     }

@@ -60,7 +60,7 @@ api.interceptors.response.use(
           withCredentials: true,
         });
 
-        const { accessToken } = refreshResponse.data.data;
+        const { accessToken } = refreshResponse.data;
         localStorage.setItem('accessToken', accessToken);
         
         // Broadcast token refresh to other tabs
@@ -92,27 +92,23 @@ export interface User {
 export interface LoginResponse {
   success: boolean;
   message: string;
-  data: {
+  accessToken: string;
+  user: {
     id: number;
     username: string;
     email: string;
     role: string;
-    accessToken: string;
-    tokenType: string;
-    expiresIn: number;
   };
 }
 
 export interface RegisterResponse {
   success: boolean;
   message: string;
-  data?: {
+  user?: {
     id: number;
     username: string;
     email: string;
-    accessToken: string;
-    tokenType: string;
-    expiresIn: number;
+    role: string;
   };
 }
 
@@ -123,8 +119,8 @@ class AuthService {
       password,
     });
     
-    if (response.data.success && response.data.data.accessToken) {
-      localStorage.setItem('accessToken', response.data.data.accessToken);
+    if (response.data.success && response.data.accessToken) {
+      localStorage.setItem('accessToken', response.data.accessToken);
     }
     
     return response.data;
@@ -137,10 +133,7 @@ class AuthService {
       password,
     });
     
-    if (response.data.success && response.data.data?.accessToken) {
-      localStorage.setItem('accessToken', response.data.data.accessToken);
-    }
-    
+    // Registration doesn't return accessToken, user needs to login separately
     return response.data;
   }
 
@@ -161,7 +154,7 @@ class AuthService {
 
   async refreshToken(): Promise<string> {
     const response: AxiosResponse<LoginResponse> = await api.post('/auth/refresh-token');
-    const { accessToken } = response.data.data;
+    const { accessToken } = response.data;
     localStorage.setItem('accessToken', accessToken);
     return accessToken;
   }

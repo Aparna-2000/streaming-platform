@@ -1,29 +1,37 @@
 import { Router, Request, Response } from 'express';
-import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { addClient } from '../realtime/securityEvents';
-import { verifyAccessToken } from '../utils/jwt';
+import { verifyRefreshToken } from '../utils/refreshTokens';
 
 const router: Router = Router();
 
 /**
- * GET /security/stream?token=<access_token>
+ * GET /security/stream
  * SSE stream for security alerts (per authenticated user)
- * Uses query parameter for authentication since EventSource doesn't support custom headers
+ * Uses query parameter-based authentication since EventSource doesn't support custom headers
  */
-router.get('/stream', (req: Request, res: Response) => {
+router.get('/stream', async (req: Request, res: Response) => {
   try {
-    // Get token from query parameter since EventSource doesn't support custom headers
-    const token = req.query.token as string;
+    // Get access token from query parameter since EventSource doesn't support custom headers
+    const accessToken = req.query.token as string;
     
-    if (!token) {
-      return res.status(401).json({ success: false, message: 'No token provided' });
+    if (!accessToken) {
+      return res.status(401).json({ success: false, message: 'No access token provided' });
     }
 
-    // Verify the token using the same utility as other parts of the app
-    const decoded = verifyAccessToken(token);
+    // Verify the access token using JWT
+    const jwt = require('jsonwebtoken');
+    const secret = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'fallback-secret';
     
-    if (!decoded.sub) {
-      return res.status(401).json({ success: false, message: 'Invalid token' });
+    let decoded: any;
+    try {
+      decoded = jwt.verify(accessToken, secret);
+    } catch (jwtError) {
+      return res.status(401).json({ success: false, message: 'Invalid access token' });
+    }
+
+    const userId = decoded.sub || decoded.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Invalid token payload' });
     }
 
     // SSE headers
@@ -39,11 +47,11 @@ router.get('/stream', (req: Request, res: Response) => {
     // Initial hello
     res.write(`event: ping\ndata: "connected"\n\n`);
 
-    addClient(Number(decoded.sub), res);
+    addClient(parseInt(userId), res);
     
   } catch (error) {
     console.error('SSE authentication error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return res.status(401).json({ success: false, message: 'Authentication failed' });
   }
 });
 

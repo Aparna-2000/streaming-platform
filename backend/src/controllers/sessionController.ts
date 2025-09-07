@@ -3,16 +3,77 @@ import bcrypt from 'bcrypt';
 import { pool } from '../config/database';
 import { AuthRequest } from '../middleware/auth';
 import { revokeAllUserTokens } from '../utils/refreshTokens';
+import { emitSecurityEvent } from '../realtime/securityEvents';
+import { generateDeviceFingerprint } from '../utils/deviceFingerprint';
 
 /**
  * POST /auth/enforce-single-session
  * Revokes all existing sessions before login (single session enforcement)
+ * Now includes cross-browser login detection and security alerts
  */
-export const enforceSingleSession = async (userId: number) => {
+export const enforceSingleSession = async (userId: number, req?: any) => {
   try {
+    // Check if user has existing active sessions
+    const [existingSessions] = await pool.execute(
+      `SELECT COUNT(*) as session_count, 
+              GROUP_CONCAT(DISTINCT device_info) as devices,
+              GROUP_CONCAT(DISTINCT ip_address) as ips
+       FROM refresh_tokens 
+       WHERE user_id = ? AND revoked_at IS NULL`,
+      [userId]
+    );
+
+    const sessionData = (existingSessions as any[])[0];
+    const hasActiveSessions = sessionData.session_count > 0;
+
+    if (hasActiveSessions && req) {
+      // Get current login attempt details
+      const currentDevice = generateDeviceFingerprint(req);
+      const currentIP = req.ip || req.connection.remoteAddress || 'Unknown';
+      const currentUserAgent = req.headers['user-agent'] || 'Unknown';
+
+      // Check if this is a cross-browser login attempt
+      const existingDevices = sessionData.devices ? sessionData.devices.split(',') : [];
+      const existingIPs = sessionData.ips ? sessionData.ips.split(',') : [];
+
+      const isCrossBrowserLogin = !existingDevices.some((device: string) => 
+        device.includes(currentUserAgent.split('/')[0]) // Compare browser type
+      );
+
+      const isCrossIPLogin = !existingIPs.includes(currentIP);
+
+      if (isCrossBrowserLogin || isCrossIPLogin) {
+        console.log('🚨 CROSS-BROWSER/IP LOGIN DETECTED');
+        console.log(`      User ID: ${userId}`);
+        console.log(`      Existing devices: ${existingDevices.join(', ')}`);
+        console.log(`      New device: ${currentUserAgent}`);
+        console.log(`      Existing IPs: ${existingIPs.join(', ')}`);
+        console.log(`      New IP: ${currentIP}`);
+
+        // Emit security alert to all existing sessions BEFORE revoking them
+        emitSecurityEvent(userId, {
+          type: 'SECURITY_ALERT',
+          reason: 'CROSS_BROWSER_LOGIN_ATTEMPT',
+          message: 'New login detected from different browser/IP - all sessions will be terminated',
+          existingDevices,
+          newDevice: currentUserAgent,
+          existingIPs,
+          newIP: currentIP,
+          timestamp: new Date().toISOString()
+        });
+
+        // Give existing sessions a moment to receive the alert before revoking
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
     // Revoke all existing refresh tokens for this user
     await revokeAllUserTokens(userId);
     console.log(`🔒 Single session enforced: All previous sessions revoked for user ${userId}`);
+    
+    if (hasActiveSessions) {
+      console.log(`🔒 ${sessionData.session_count} existing session(s) terminated`);
+    }
   } catch (error) {
     console.error('Failed to enforce single session:', error);
     throw error;
